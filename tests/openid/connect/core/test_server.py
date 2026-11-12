@@ -8,6 +8,10 @@ from oauthlib.oauth2.rfc6749.endpoints.authorization import (
 )
 from oauthlib.oauth2.rfc6749.endpoints.token import TokenEndpoint
 from oauthlib.oauth2.rfc6749.tokens import BearerToken
+from oauthlib.oauth2.rfc8628.grant_types import (
+    DeviceCodeGrant as OAuth2DeviceCodeGrant,
+)
+from oauthlib.openid.connect.core.endpoints.pre_configured import Server
 from oauthlib.openid.connect.core.grant_types.authorization_code import (
     AuthorizationCodeGrant,
 )
@@ -213,3 +217,76 @@ class TokenEndpointTest(TestCase):
         _, body, _ = self.endpoint.create_token_response('', body=body)
         token = {'error': 'unsupported_grant_type'}
         self.assertEqual(json.loads(body), token)
+
+
+class DeviceCodeServerTest(TestCase):
+    """End-to-end device flow through the all-in-one OpenID Connect Server."""
+
+    def setUp(self):
+        def set_client(request):
+            request.client = mock.MagicMock()
+            request.client.client_id = 'mocked_client_id'
+            return True
+
+        self.mock_validator = mock.MagicMock()
+        self.mock_validator.authenticate_client.side_effect = set_client
+        self.mock_validator.get_id_token.return_value = 'MOCKED_ID_TOKEN'
+        self.mock_validator.get_device_code_nonce.return_value = 'nonce-xyz'
+        self.addCleanup(setattr, self, 'mock_validator', mock.MagicMock())
+        self.server = Server(self.mock_validator)
+
+    def poll_token(self, scopes):
+        def authorize(client_id, device_code, request):
+            request.scopes = scopes
+            request.user = mock.MagicMock()
+            return OAuth2DeviceCodeGrant.DEVICE_CODE_AUTHORIZED
+
+        self.mock_validator.validate_device_code.side_effect = authorize
+        body = ('grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code'
+                '&device_code=device_code_1234&client_id=mocked_client_id')
+        _headers, body, status_code = self.server.create_token_response(
+            'https://i.b/token',
+            body=body,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+        )
+        return status_code, json.loads(body)
+
+    def test_device_flow_issues_id_token_with_openid_scope(self):
+        status_code, token = self.poll_token(['profile', 'openid'])
+
+        self.assertEqual(status_code, 200)
+        self.assertIn('access_token', token)
+        self.assertIn('refresh_token', token)
+        self.assertEqual(token['id_token'], 'MOCKED_ID_TOKEN')
+        self.assertEqual(token['scope'], 'profile openid')
+        self.assertEqual(self.mock_validator.save_token.call_count, 1)
+        self.mock_validator.get_device_code_nonce.assert_called_once()
+
+    def test_device_flow_without_openid_scope_omits_id_token(self):
+        status_code, token = self.poll_token(['profile'])
+
+        self.assertEqual(status_code, 200)
+        self.assertIn('access_token', token)
+        self.assertIn('refresh_token', token)
+        self.assertNotIn('id_token', token)
+        self.assertEqual(token['scope'], 'profile')
+        self.assertEqual(self.mock_validator.save_token.call_count, 1)
+        self.mock_validator.get_device_code_nonce.assert_not_called()
+        self.mock_validator.get_id_token.assert_not_called()
+
+    def test_device_flow_authorization_pending(self):
+        self.mock_validator.validate_device_code.side_effect = None
+        self.mock_validator.validate_device_code.return_value = (
+            OAuth2DeviceCodeGrant.DEVICE_CODE_PENDING
+        )
+        body = ('grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code'
+                '&device_code=device_code_1234&client_id=mocked_client_id')
+        _headers, body, status_code = self.server.create_token_response(
+            'https://i.b/token',
+            body=body,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(json.loads(body), {'error': 'authorization_pending'})
+        self.mock_validator.save_token.assert_not_called()

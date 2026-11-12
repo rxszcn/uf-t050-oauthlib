@@ -61,6 +61,34 @@ class RequestValidator(OAuth2RequestValidator):
         """
         raise NotImplementedError('Subclasses must implement this method.')
 
+    def get_device_code_nonce(self, client_id, device_code, request):
+        """Extracts nonce from saved device code.
+
+        If present in the Device Authorization Request, Authorization
+        Servers MUST include a nonce Claim in the ID Token with the
+        Claim Value being the nonce value sent in the Device
+        Authorization Request. Authorization Servers SHOULD perform no
+        other processing on nonce values used. The nonce value is a
+        case-sensitive string.
+
+        The device_code param should be sufficient to retrieve the nonce
+        from any storage you are using; `client_id` has been validated
+        and can be used also.
+
+        The default implementation returns no nonce. Subclasses that
+        accept a `nonce` parameter on their device authorization
+        endpoint should persist it alongside the device_code and
+        override this method to return it.
+
+        :param client_id: Unicode client identifier
+        :param device_code: Unicode device code
+        :return: Unicode nonce or None
+
+        Method is used by:
+            - Device Code Grant
+        """
+        return None
+
     def get_jwt_bearer_token(self, token, token_handler, request):
         """Get JWT Bearer token or OpenID Connect ID token
 

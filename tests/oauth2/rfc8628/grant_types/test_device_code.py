@@ -117,6 +117,39 @@ def test_create_token_response():
     validator.save_token.assert_called_once()
 
 
+def test_token_modifiers_are_applied_before_save_token():
+    """Registered token modifiers run on the token before it is persisted.
+
+    This hook mirrors the rfc6749 grants and is what lets the OpenID
+    Connect layer attach an id_token to device flow token responses.
+    """
+    validator = mock.MagicMock()
+    request: common.Request = create_request()
+
+    def authorize(client_id, code, req):
+        req.scopes = ["hello", "world"]
+        return DeviceCodeGrant.DEVICE_CODE_AUTHORIZED
+
+    validator.validate_device_code.side_effect = authorize
+
+    auth = DeviceCodeGrant(validator)
+
+    def modifier(token, token_handler, req):
+        token["extra"] = "modified"
+        return token
+
+    auth.register_token_modifier(modifier)
+
+    bearer = BearerToken(validator)
+    _headers, body, status_code = auth.create_token_response(request, bearer)
+    token = json.loads(body)
+
+    assert status_code == 200
+    assert token["extra"] == "modified"
+    saved_token = validator.save_token.call_args[0][0]
+    assert saved_token["extra"] == "modified"
+
+
 def test_invalid_client_authentication_error_confidential_client():
     validator = mock.MagicMock()
     request: common.Request = create_request()
